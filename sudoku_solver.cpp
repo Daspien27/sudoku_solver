@@ -68,6 +68,7 @@ sudoku::sudoku(std::array<int, 9 * 9> grid) : grid_(grid){
 }
 
 auto memoize(auto fn) {
+//Credits code_report: https://www.youtube.com/watch?v=aIOMRqiwziM&t=711s
     return[done = std::map<int, std::array<int, 9>>{}, fn](int n) mutable {
         if (auto it = done.find(n); it != done.end()) {
             return it->second;
@@ -291,7 +292,6 @@ int sudoku::distance(const sudoku& s1, const sudoku& s2) {
 bool sudoku::is_solved() const {
     return grid_.size() - std::count(grid_.begin(), grid_.end(), 0);
 }
-
 
 sudoku load_sudoku(int puzzle_choice = -1) {
     //std::fill(grid_.begin(), grid_.end(), 1);
@@ -652,7 +652,6 @@ void application::draw_thicklines(sf::RenderWindow& window)
 application::application() {
     sudoku_states_.emplace_back(load_sudoku());
 }
-
 
 void application::handle_events(sf::Event event) {
     // "close requested" event: we close the window
