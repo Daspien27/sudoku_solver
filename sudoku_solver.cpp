@@ -70,13 +70,14 @@ sudoku::sudoku(std::array<int, 9 * 9> grid) : grid_(grid){
     load_annotate();
 }
 
+template <typename T>
 auto memoize(auto fn) {
 //Credits code_report: https://www.youtube.com/watch?v=aIOMRqiwziM&t=711s
-    return[done = std::map<int, std::array<int, 9>>{}, fn](int n) mutable {
-        if (auto it = done.find(n); it != done.end()) {
+    return[done = std::map <T, decltype(fn(T{}))> {}, fn] (T arg) mutable -> auto& {
+        if (auto it = done.find(arg); it != done.end()) {
             return it->second;
         }
-        return done[n] = fn(n);
+        return done[arg] = fn(arg);
     };
 }
 
@@ -89,7 +90,7 @@ auto row(int n) {
         return row_l;
     };
 
-    static auto memoize_row = memoize(row_list);
+    static auto memoize_row = memoize<int>(row_list);
 
     return memoize_row(n);
 }
@@ -103,7 +104,7 @@ auto column(int n) {
         return col_l;
     };
 
-    static auto memoize_col = memoize(col_list);
+    static auto memoize_col = memoize<int>(col_list);
 
     return memoize_col(n);
 }
@@ -122,7 +123,7 @@ auto box(int n) {
         return box_l;
     };
 
-    static auto memoize_box = memoize(box_list);
+    static auto memoize_box = memoize<int>(box_list);
 
     return memoize_box(n);
 }
@@ -246,6 +247,23 @@ void sudoku::solve_hidden_singles() {
     hidden_singles(box);
 }
 
+const auto& unit_subset_permutations(int k, int n) {
+    const auto permutations = [](std::pair<int, int> p) {
+        if (p.second > 9) throw std::runtime_error("n is larger than expected.");
+        std::array<bool, 9> subset{};
+        std::vector<std::array<bool, 9>> perms;
+        std::fill_n(subset.begin(), p.first, true);
+        do {
+            perms.push_back(subset);
+        } while (std::prev_permutation(subset.begin(), subset.begin() + p.second));
+        return perms;
+    };
+
+    static auto memoize_unit_subset_permutations = memoize<std::pair<int, int>>(permutations);
+
+    return memoize_unit_subset_permutations(std::pair{ k, n });
+}
+
 void sudoku::annotate_subsets() {
 
     auto subsets = [&](auto unit) {
@@ -264,31 +282,25 @@ void sudoku::annotate_subsets() {
                 }
             }
 
-            std::array<std::array<bool, 9>, 7> candidate_subsets{}; // scratch space
-            for (int ss = 2; ss < 8 && ss < to_insert - 1; ++ss) { //we only consider subset sizes up to the 7 starting from pairs. As 8 implies hidden singles
-                std::fill_n(candidate_subsets[ss-2].begin(), ss, true);
-            }
+            for (int ss = 2; ss < 8 && ss < to_insert; ++ss) {
+                const auto& candidate_subsets = unit_subset_permutations(ss, to_insert);
 
-            int ss_size = 2;
-            for (auto& candidate_subset : candidate_subsets) {
-                do {
-                    unsigned subset_space = std::transform_reduce(frontier.begin(), frontier.begin() + to_insert, candidate_subset.begin(), 0u, [](int u, int a) {
+                for (const auto& css : candidate_subsets) {
+                    unsigned subset_space = std::transform_reduce(frontier.begin(), frontier.begin() + to_insert, css.begin(), 0u, [](int u, int a) {
                         return u | a;
                         }, [&](int f, bool s) {
                             return annotations_[f] * s;
                         });
 
-                    if (std::popcount(subset_space) == ss_size) {
+                    if (std::popcount(subset_space) == ss) {
                         auto rem = 0b111111111 ^ subset_space;
                         for (int r = 0; r < to_insert; ++r) {
-                            if (candidate_subset[r] == 0) {
+                            if (css[r] == 0) {
                                 unit_annotations[frontier[r]] &= rem;
                             }
                         }
                     }
-
-                } while (std::prev_permutation(candidate_subset.begin(), candidate_subset.begin() + to_insert));
-                ++ss_size;
+                }
             }
         }
 
