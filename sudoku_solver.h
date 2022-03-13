@@ -7,6 +7,7 @@
 #include <SFML/Graphics.hpp>
 #include <array>
 #include <vector>
+#include <variant>
 
 class sudoku;
 
@@ -20,6 +21,24 @@ public:
 
     void render(sf::RenderWindow& window, sudoku& s);
 };
+
+struct cell_action {
+    int cell_idx;
+};
+
+enum class unit {
+    row,
+    column,
+    box,
+};
+
+struct unit_action {
+    unit type;
+    int unit_idx;
+    int action;
+};
+
+struct contradiction {};
 
 class sudoku {
 
@@ -47,9 +66,16 @@ public:
     sudoku(std::array<int, 9 * 9> grid);
     sudoku(const sudoku& o) = default;
 
-    static sudoku advance(const sudoku& s);
+    static std::variant<sudoku, contradiction> advance(const sudoku& s);
     static int distance(const sudoku& s1, const sudoku& s2);
     bool is_solved() const;
+
+    static bool validate(const sudoku& s);
+    static std::vector<cell_action> get_minimal_cell_actions(const sudoku& s, int branch_factor);
+    static std::vector<unit_action> get_minimal_unit_actions(const sudoku& s, int branch_factor);
+    static std::vector<std::variant<cell_action, unit_action>> get_minimal_actions(const sudoku& s, int branch_factor);
+    static std::vector<sudoku> branch(const sudoku& s, cell_action ca);
+    static std::vector<sudoku> branch(const sudoku& s, unit_action ca);
 };
 
 class application {
@@ -57,6 +83,7 @@ class application {
     sf::RenderWindow window_{ sf::VideoMode(800, 600), "sudoku_solver" };
     sudoku_render renderer;
     std::vector<sudoku> sudoku_states_;
+    std::vector <std::pair<std::variant<cell_action, unit_action>, sudoku>> sudoku_search_stack_;
     int sudoku_puzzle_idx_{ -1 };
     int sudoku_state_display_idx_{ -1 };
 

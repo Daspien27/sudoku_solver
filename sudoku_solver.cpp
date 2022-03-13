@@ -11,6 +11,9 @@
 #include <bit>
 #include <fstream>
 #include <chrono>
+#include <vector>
+#include <variant>
+
 const float GRID_SIZE = 50.0f;
 const float MARGIN = 20.0f;
 const float LINE_THICKNESS = 3.0f;
@@ -156,10 +159,15 @@ void sudoku::load_annotate() {
         for (int j = 0; j < 9; ++j) {
             auto& annotation = annotations_[9 * i + j];
             
-            annotation &= column_annotation(j);
-            annotation &= row_annotation(i);
-            int box = 3 * (i / 3) + j / 3;
-            annotation &= box_annotation(box);
+            if (grid_[9 * i + j] == 0) {
+                annotation &= column_annotation(j);
+                annotation &= row_annotation(i);
+                int box = 3 * (i / 3) + j / 3;
+                annotation &= box_annotation(box);
+            }
+            else {
+                annotation = 1 << (grid_[9 * i + j] - 1);
+            }
         }
     }
 }
@@ -188,29 +196,48 @@ void sudoku::solve_hidden_singles() {
 
     auto hidden_singles = [&](auto unit) {
         for (int i = 0; i < 9; ++i) {
-            std::array<int, 9> counts{};
             auto idxs = unit(i);
 
-            for (int n = 0; n < 9; ++n) {
-                int hidden_idx = -1;
-                for (int idx : idxs) {
-                    if (hidden_idx != -2) {
-                        if (grid_[idx] == n + 1) {
-                            hidden_idx = -2;
-                        }
-                        else if (grid_[idx] == 0 && annotations_[idx] & 1 << n) {
-                            if (hidden_idx == -1) {
-                                hidden_idx = idx;
-                            }
-                            else {
-                                hidden_idx = -2;
-                            }
-                        }
-                    }
+            std::array<int, 9> counts{};
+            std::array<int, 9> location{};
+            
+            for (int idx : idxs) {
+                for (int n = 0; n < 9; ++n) {
+                    bool is_set_already = (grid_[idx] == n + 1);
+                    bool has_annotation = (annotations_[idx] & 1 << n);
+                    
+                    counts[n] += 2 * is_set_already;
+                    counts[n] += 1 * has_annotation;
+                    location[n] += idx * has_annotation;
                 }
-
-                if (hidden_idx >= 0) grid_[hidden_idx] = n + 1;
             }
+            
+            for (int n = 0; n < 9; ++n) {
+                if (counts[n] == 1) {
+                    grid_[location[n]] = n + 1;
+                }
+            }
+
+            //for (int n = 0; n < 9; ++n) {
+            //    int hidden_idx = -1;
+            //    for (int idx : idxs) {
+            //        if (hidden_idx != -2) {
+            //            if (grid_[idx] == n + 1) {
+            //                hidden_idx = -2;
+            //            }
+            //            else if (grid_[idx] == 0 && annotations_[idx] & 1 << n) {
+            //                if (hidden_idx == -1) {
+            //                    hidden_idx = idx;
+            //                }
+            //                else {
+            //                    hidden_idx = -2;
+            //                }
+            //            }
+            //        }
+            //    }
+            //
+            //    if (hidden_idx >= 0) grid_[hidden_idx] = n + 1;
+            //}
         }
     };
 
@@ -222,6 +249,9 @@ void sudoku::solve_hidden_singles() {
 void sudoku::annotate_subsets() {
 
     auto subsets = [&](auto unit) {
+
+        auto unit_annotations = annotations_;
+
         for (int i = 0; i < 9; ++i) {
             std::array<int, 9> counts{};
             auto idxs = unit(i);
@@ -234,9 +264,9 @@ void sudoku::annotate_subsets() {
                 }
             }
 
-            std::array<std::array<int, 9>, 7> candidate_subsets{}; // scratch space
+            std::array<std::array<bool, 9>, 7> candidate_subsets{}; // scratch space
             for (int ss = 2; ss < 8 && ss < to_insert - 1; ++ss) { //we only consider subset sizes up to the 7 starting from pairs. As 8 implies hidden singles
-                std::fill_n(candidate_subsets[ss-2].begin(), ss, 1);
+                std::fill_n(candidate_subsets[ss-2].begin(), ss, true);
             }
 
             int ss_size = 2;
@@ -244,7 +274,7 @@ void sudoku::annotate_subsets() {
                 do {
                     unsigned subset_space = std::transform_reduce(frontier.begin(), frontier.begin() + to_insert, candidate_subset.begin(), 0u, [](int u, int a) {
                         return u | a;
-                        }, [&](int f, int s) {
+                        }, [&](int f, bool s) {
                             return annotations_[f] * s;
                         });
 
@@ -252,7 +282,7 @@ void sudoku::annotate_subsets() {
                         auto rem = 0b111111111 ^ subset_space;
                         for (int r = 0; r < to_insert; ++r) {
                             if (candidate_subset[r] == 0) {
-                                annotations_[frontier[r]] &= rem;
+                                unit_annotations[frontier[r]] &= rem;
                             }
                         }
                     }
@@ -261,19 +291,30 @@ void sudoku::annotate_subsets() {
                 ++ss_size;
             }
         }
+
+        return unit_annotations;
     };
 
-    subsets(box);
-    subsets(column);
-    subsets(row);
+    auto box_annotations = subsets(box);
+    auto column_annotations = subsets(column);
+    auto row_annotations = subsets(row);
+
+    for (int i = 0; i < 81; ++i) {
+        annotations_[i] &= (box_annotations[i] & column_annotations[i] & row_annotations[i]);
+    }
 }
 
-sudoku sudoku::advance(const sudoku& s) {
+std::variant<sudoku, contradiction> sudoku::advance(const sudoku& s) {
     sudoku new_s (s);
 
     // solving operations
     new_s.solve_naked_singles();
     new_s.solve_hidden_singles();
+
+    // validation
+    if (!validate(new_s)) {
+        return contradiction{};
+    }
 
     //reannotate
     new_s.load_annotate();
@@ -290,8 +331,137 @@ int sudoku::distance(const sudoku& s1, const sudoku& s2) {
 }
 
 bool sudoku::is_solved() const {
-    return grid_.size() - std::count(grid_.begin(), grid_.end(), 0);
+    return (std::count(grid_.begin(), grid_.end(), 0) == 0) && validate(*this);
 }
+
+bool sudoku::validate(const sudoku& s) {
+
+    auto validate_unit = [&](auto unit) {
+        for (int i = 0; i < 9; ++i) {
+            auto idxs = unit(i);
+
+            std::array<int, 10> count{};
+            for (int idx : idxs) {
+                ++count[s.grid_[idx]];
+            }
+
+            if (std::find_if(count.begin() + 1, count.end(), [](int c) {
+                return c > 1;
+                }) != count.end()) return false;
+
+        }
+
+        return true;
+    };
+
+    return validate_unit(row) && validate_unit(column) && validate_unit(box);
+}
+
+std::vector<cell_action> sudoku::get_minimal_cell_actions(const sudoku& s, int branch_factor) {
+
+    std::vector<cell_action> list;
+
+    for (int i = 0; i < 81; ++i) {
+        if (std::popcount(static_cast<unsigned> (s.annotations_[i])) == branch_factor && s.grid_[i] == 0) {
+            list.emplace_back(i);
+        }
+    }
+
+    return list;
+}
+
+std::vector<unit_action> sudoku::get_minimal_unit_actions(const sudoku& s, int branch_factor) {
+    std::vector<unit_action> list;
+
+    auto unit_action_branches = [&](auto u, unit type) {
+        for (int i = 0; i < 9; ++i) {
+            auto idxs = u(i);
+            for (int n = 0; n < 9; ++n) {
+                int count = std::count_if(idxs.begin(), idxs.end(), [&](int idx) {
+                    return (s.annotations_[idx] & 1 << n) && s.grid_[idx] == 0;
+                    });
+
+                if (count == branch_factor) {
+                    list.emplace_back(type, i, n+1);
+                }
+            }
+        }
+    };
+
+    unit_action_branches(column, unit::column);
+    unit_action_branches(row, unit::row);
+    unit_action_branches(box, unit::box);
+
+    return list;
+}
+
+std::vector<std::variant<cell_action, unit_action>> sudoku::get_minimal_actions(const sudoku& s, int branch_factor) {
+    
+    // find all cell actions
+    auto cell_actions = get_minimal_cell_actions(s, branch_factor);
+    // find all unit actions
+    auto unit_actions = get_minimal_unit_actions(s, branch_factor);
+    //merge lists
+    std::vector<std::variant<cell_action, unit_action>> list;
+    list.reserve(cell_actions.size() + unit_actions.size());
+    std::transform(cell_actions.begin(), cell_actions.end(), std::back_inserter(list), [](const auto action) {
+        return std::variant<cell_action, unit_action> { action };
+        });
+    std::transform(unit_actions.begin(), unit_actions.end(), std::back_inserter(list), [](const auto action) {
+        return std::variant<cell_action, unit_action> { action };
+        });
+    return list;
+}
+
+std::vector<sudoku> sudoku::branch(const sudoku& s, cell_action ca) {
+
+    std::vector<sudoku> branches;
+    for (int n = 0; n < 9; ++n) {
+        if (s.annotations_[ca.cell_idx] & 1 << n && s.grid_[ca.cell_idx] == 0) {
+            auto& new_s = branches.emplace_back(s);
+            new_s.grid_[ca.cell_idx] = n + 1;
+            new_s.load_annotate();
+            new_s.annotate_subsets();
+        }
+    }
+
+    return branches;
+}
+
+std::vector<sudoku> sudoku::branch(const sudoku& s, unit_action ua) {
+
+    auto idxs = [&]() {
+        switch (ua.type) {
+            case unit::column: return column(ua.unit_idx);
+            case unit::row: return row(ua.unit_idx);
+            case unit::box: return box(ua.unit_idx);
+            default: throw std::runtime_error("Unexpected unit type.");
+        }
+    }();
+
+    std::vector<sudoku> branches;
+
+    std::array<int, 9> a{};
+    std::transform(idxs.begin(), idxs.end(), a.begin(), [&](int idx) {
+        return s.annotations_[idx];
+        });
+    std::array<int, 9> g{};
+    std::transform(idxs.begin(), idxs.end(), g.begin(), [&](int idx) {
+        return s.grid_[idx];
+        });
+
+    for (int idx : idxs) {
+        if ((s.annotations_[idx] & 1 << (ua.action - 1)) && s.grid_[idx] == 0) {
+            auto& new_s = branches.emplace_back(s);
+            new_s.grid_[idx] = ua.action;
+            new_s.load_annotate();
+            new_s.annotate_subsets();
+        }
+    }
+
+    return branches;
+}
+
 
 sudoku load_sudoku(int puzzle_choice = -1) {
     //std::fill(grid_.begin(), grid_.end(), 1);
@@ -539,7 +709,29 @@ sudoku load_sudoku(int puzzle_choice = -1) {
                                              " 49  182 "
                                              "4   87   "
                                              "  3  2  5"
-                                             "         "sv
+                                             "         "sv,
+
+        // evil sudoku.com
+                                             " 2 49   6"
+                                             "     3   "
+                                             "7     5  "
+                                             " 9 16   4"
+                                             "  2    9 "
+                                             "    8    "
+                                             "     2  3"
+                                             " 1   8   "
+                                             "  531 6  "sv,
+
+        // evil sudoku.com
+                                             "  5    2 "
+                                             "9  4  1 5"
+                                             "    1  7 "
+                                             "       1 "
+                                             " 8 9     "
+                                             "  7 4 6 3"
+                                             "  3 6 5 4"
+                                             "        2"
+                                             "7    3   "sv
     };
 
     std::array<int, 9 * 9> grid;
@@ -569,7 +761,7 @@ void solve_sudoku17() {
     while (std::getline(is, sudoku_strings.emplace_back()));
     sudoku_strings.pop_back(); // the false call for getline appends an empty string
 
-    std::vector<std::vector<sudoku>> sudokus;
+    std::vector<sudoku> sudokus;
     sudokus.reserve(sudoku_strings.size());
     std::transform(sudoku_strings.begin(), sudoku_strings.end(), std::back_inserter(sudokus), [](const std::string& s) {
         std::array<int, 81> grid{};
@@ -587,7 +779,7 @@ void solve_sudoku17() {
             default: return 0;
             }
             });
-        return std::vector{ sudoku{ grid } };
+        return sudoku{ grid };
     });
 
     int i = 0;
@@ -595,22 +787,70 @@ void solve_sudoku17() {
     using double_ms = std::chrono::duration<double, std::milli>;
     using double_s = std::chrono::duration<double>;
 
+    std::vector<sudoku> sudoku_states;
+    std::vector<sudoku> sudoku_search_stack;
+    std::vector<sudoku> solved_sudokus;
+    solved_sudokus.reserve(sudokus.size());
+    sudoku_states.reserve(16);       //preallocate memory for hot path
+    sudoku_search_stack.reserve(16);
+
     auto solver_start = std::chrono::system_clock::now();
     for (auto& s : sudokus) {
         auto start = std::chrono::system_clock::now();
+        sudoku_states.clear();
+        sudoku_search_stack.clear();
+        sudoku_states.push_back(s);
 
-        for (sudoku new_s = sudoku::advance(s.back());
-            sudoku::distance(new_s, s.back()) > 0;
-            new_s = sudoku::advance(s.back())) {
-            s.push_back(new_s);
+        while (!sudoku_states.back().is_solved()) {
+            if (auto new_s = sudoku::advance(sudoku_states.back());
+                std::holds_alternative<sudoku>(new_s) && sudoku::distance(std::get<sudoku>(new_s), sudoku_states.back()) > 0) {
+                sudoku_states.push_back(std::get<sudoku>(new_s));
+            }
+            else if (std::holds_alternative<sudoku>(new_s))
+            {
+                int branch_factor = 2;
+                std::vector<std::variant<cell_action, unit_action>> actions;
+
+                do {
+                    actions = sudoku::get_minimal_actions(std::get<sudoku>(new_s), branch_factor++);
+                } while (actions.empty() && branch_factor < 9);
+
+                if (!actions.empty()) {
+                    //choose the action to use (priotize first for now since we have no heuristics)
+                    auto& action_choice = *actions.begin();
+
+                    auto branches = std::visit([&](const auto& action) {
+                        return sudoku::branch(std::get<sudoku>(new_s), action);
+                        }, action_choice);
+
+                    if (branches.empty()) {
+                        std::cout << "poor action\n";
+                    }
+                    else {
+                        sudoku_search_stack.insert(sudoku_search_stack.end(), branches.begin(), branches.end());
+                        sudoku_states.push_back(sudoku_search_stack.back());
+                        sudoku_search_stack.pop_back();
+                    }
+                }
+                else {
+
+                    sudoku_states.push_back(sudoku_search_stack.back());
+                    sudoku_search_stack.pop_back();
+                }
+            }
+            else {
+                sudoku_states.push_back(sudoku_search_stack.back());
+                sudoku_search_stack.pop_back();
+            }
         }
 
         auto end = std::chrono::system_clock::now();
-        std::cout << "#" << i++ << ": " << std::chrono::duration_cast<double_ms> (end - start) << "\n";
+        solved_sudokus.push_back(sudoku_states.back());
+        //std::cout << "#" << i++ << ": " << std::chrono::duration_cast<double_ms> (end - start) << "\n";
     }
 
-    int num_solved = std::count_if(sudokus.begin(), sudokus.end(), [](const auto& s) {
-        return s.back().is_solved();
+    int num_solved = std::count_if(solved_sudokus.begin(), solved_sudokus.end(), [](const auto& s) {
+        return s.is_solved();
         });
 
     auto solver_end = std::chrono::system_clock::now();
@@ -662,21 +902,68 @@ void application::handle_events(sf::Event event) {
     {
         switch (event.key.code) {
         case sf::Keyboard::Space: {
-            //only insert states that are different from the prervious state
-            if (auto new_s = sudoku::advance(sudoku_states_.back()); 
-                sudoku::distance(new_s, sudoku_states_.back()) > 0) { 
-                sudoku_states_.push_back(new_s);
-                sudoku_state_display_idx_ = sudoku_states_.size() - 1;
+            //only insert states that are different from the previous state
+            if (!sudoku_states_.back().is_solved()) {
+                if (auto new_s = sudoku::advance(sudoku_states_.back());
+                    std::holds_alternative<sudoku>(new_s) && sudoku::distance(std::get<sudoku>(new_s), sudoku_states_.back()) > 0) {
+                    sudoku_states_.push_back(std::get<sudoku>(new_s));
+                    sudoku_state_display_idx_ = sudoku_states_.size() - 1;
+                }
+                else if (std::holds_alternative<sudoku>(new_s))
+                {
+                    //find actions
+                    //  - prefer minimal branching
+                    //  - actions are cell or unit based
+                    int branch_factor = 2;
+                    std::vector<std::variant<cell_action, unit_action>> actions;
+
+                    do {
+                        actions = sudoku::get_minimal_actions(std::get<sudoku>(new_s), branch_factor++);
+                    } while (actions.empty() && branch_factor < 9);
+
+                    if (!actions.empty()) {
+                        //choose the action to use (priotize first for now since we have no heuristics)
+                        auto& action_choice = *actions.begin();
+
+                        auto branches = std::visit([&](const auto& action) {
+                            return sudoku::branch(std::get<sudoku>(new_s), action);
+                            }, action_choice);
+
+                        //and branches (with actions to state)
+                        std::vector<std::pair<std::variant<cell_action, unit_action>, sudoku>> action_and_branches;
+                        action_and_branches.reserve(branches.size());
+                        std::transform(branches.begin(), branches.end(), std::back_inserter(action_and_branches), [&](const sudoku& s) {
+                            return std::pair{ action_choice, s };
+                            });
+                        sudoku_search_stack_.insert(sudoku_search_stack_.end(), action_and_branches.begin(), action_and_branches.end());
+                        sudoku_states_.push_back(sudoku_search_stack_.back().second);
+                        sudoku_search_stack_.pop_back();
+                        sudoku_state_display_idx_ = sudoku_states_.size() - 1;
+                    }
+                    else{
+                        
+                        sudoku_states_.push_back(sudoku_search_stack_.back().second);
+                        sudoku_search_stack_.pop_back();
+                        sudoku_state_display_idx_ = sudoku_states_.size() - 1;
+                    }
+                }
+                else {
+                    sudoku_states_.push_back(sudoku_search_stack_.back().second);
+                    sudoku_search_stack_.pop_back();
+                    sudoku_state_display_idx_ = sudoku_states_.size() - 1;
+                }
             }
             break;
         }
         case sf::Keyboard::PageUp: {
             sudoku_states_.clear();
+            sudoku_search_stack_.clear();
             sudoku_states_.emplace_back(load_sudoku(++sudoku_puzzle_idx_));
             break;
         }
         case sf::Keyboard::PageDown: {
             sudoku_states_.clear();
+            sudoku_search_stack_.clear();
             sudoku_states_.emplace_back(load_sudoku(--sudoku_puzzle_idx_));
             break;
         }
